@@ -134,6 +134,10 @@ async def loop(ctx):
                 music_path = os.path.join(MUSIC_FOLDER, music_file)
                 music_name = music_file.split("\\")[-1]
                 play_song_info[guild_id] = {"name" : music_name}
+                if PATH_VISIBLE:
+                    ctx.send(f"正在播放: {music_file}")
+                else:
+                    ctx.send(f"正在播放: {music_name}")
                 vc.play(discord.FFmpegOpusAudio(
                     executable=FFMPEG_EXECUTABLE,
                     source=music_path,
@@ -146,26 +150,35 @@ async def loop(ctx):
     await ctx.send("開始循環播放音樂！")
 
 @bot.command()
-async def list(ctx):
+async def list(ctx, *song_name):
     # 獲取音樂檔案列表
     music_files = find_all_music_files(MUSIC_FOLDER)
     if not music_files:
         await ctx.send("音樂資料夾中沒有音樂檔案！")
         return
     
-    await ctx.send("目前資料夾檔案:")
+    selected_song = []
+    for i in music_files:
+        name = i.split("\\")[-1] #只取最後歌名
+        if " ".join(song_name) in name: 
+            selected_song.append(i)
+    
+    # 決定要顯示的檔案列表
+    display_files = selected_song if selected_song else music_files
+    
+    await ctx.send("搜尋結果:" if selected_song else "目前資料夾檔案:")
 
     msg = ""
-
-    for i in music_files:
+    for i in display_files:
         name = i.split("\\")[-1]
         if len(msg) + len((name + "\n")) < 2000: #避免discord訊息過長 分段發送
             msg += (name + "\n")
         else:
-            await ctx.send(msg);
+            await ctx.send(msg)
             msg = ""
 
-    await ctx.send(msg);
+    if msg:  # 確保最後一段訊息也有發送
+        await ctx.send(msg)
 
 @bot.command()
 async def now(ctx):

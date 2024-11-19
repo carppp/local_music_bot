@@ -30,7 +30,7 @@ Setup
 
     9.下面ffmpeg相關的如果有自己的版本或想改的參數可以自己修改
 
-    10.最下面path_visible決定撥歌的時候會不會把路徑一起發出來 預設為false
+    10.最下面path_visible決定播歌的時候會不會把路徑一起發出來 預設為false
 
     11.點bot.exe 看到最後出現login [你的bot名字]就完成了
 
