@@ -3,6 +3,7 @@ from discord.ext import commands
 import os
 import random
 import configparser
+import asyncio
 
 # 讀取配置文件
 config = configparser.ConfigParser()
@@ -126,28 +127,33 @@ async def loop(ctx):
 
     guild_id = ctx.guild.id
 
-    def play_next_song(e=None):
+    async def play_next_song(e=None):
         """播放下一首音樂"""
-        if music_files:
-            if play_song_info[guild_id]["is_looping"]:
-                music_file = random.choice(music_files)
-                music_path = os.path.join(MUSIC_FOLDER, music_file)
-                music_name = music_file.split("\\")[-1]
-                play_song_info[guild_id] = {"name" : music_name}
-                if PATH_VISIBLE:
-                    ctx.send(f"正在播放: {music_file}")
-                else:
-                    ctx.send(f"正在播放: {music_name}")
-                vc.play(discord.FFmpegOpusAudio(
-                    executable=FFMPEG_EXECUTABLE,
-                    source=music_path,
-                    options=FFMPEG_OPTIONS
-                ), after=play_next_song)
+        if music_files and play_song_info[guild_id]["is_looping"]:
+            music_file = random.choice(music_files)
+            music_path = os.path.join(MUSIC_FOLDER, music_file)
+            music_name = music_file.split("\\")[-1]
+            play_song_info[guild_id]["name"] = music_name
+            if PATH_VISIBLE:
+                await ctx.send(f"正在播放: {music_file}")
+            else:
+                await ctx.send(f"正在播放: {music_name}")
+            vc.play(discord.FFmpegOpusAudio(
+                executable=FFMPEG_EXECUTABLE,
+                source=music_path,
+                options=FFMPEG_OPTIONS
+            ),  after=lambda e: asyncio.run_coroutine_threadsafe(
+            play_next_song(), main_loop).result()
+            )
 
     vc = ctx.voice_client
-    play_song_info[guild_id] = {"is_looping" : True}
-    play_next_song()  # 開始播放
+    if vc.is_playing():
+        vc.stop()
+        return
+    main_loop = asyncio.get_event_loop()
+    play_song_info[guild_id] = {"name" : None, "is_looping" : True}
     await ctx.send("開始循環播放音樂！")
+    await play_next_song()  # 開始播放
 
 @bot.command()
 async def list(ctx, *song_name):
@@ -183,6 +189,6 @@ async def list(ctx, *song_name):
 @bot.command()
 async def now(ctx):
     guild_id = ctx.guild.id
-    await ctx.send(play_song_info[guild_id])
+    await ctx.send(play_song_info[guild_id]["name"])
 
 bot.run(BOT_TOKEN)
