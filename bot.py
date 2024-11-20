@@ -7,7 +7,8 @@ import asyncio
 
 # 讀取配置文件
 config = configparser.ConfigParser()
-config.read("my_config.ini" , encoding="utf-8")
+config.read("config.ini" , encoding="utf-8")
+# config.read("my_config.ini" , encoding="utf-8") //for develop
 
 # 從配置文件中讀取設置
 BOT_TOKEN = config["settings"]["bot_token"]
