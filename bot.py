@@ -24,7 +24,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 #目前播放的歌曲資訊
 play_song_info = {}
 
-def find_all_music_files(folder):
+def find_all_music_files(folder) -> list[str]:
     """遍歷資料夾及子資料夾，獲取所有音樂檔案"""
     supported_extensions = ('.mp3', '.wav', '.flac', 'm4a', 'aac')  # 可擴展支持的音樂格式
     music_files = []
@@ -33,6 +33,27 @@ def find_all_music_files(folder):
             if file.endswith(supported_extensions):
                 music_files.append(os.path.join(root, file))
     return music_files
+
+def get_song_name(file_path: str) -> str:
+    """從檔案路徑獲取歌名（不含副檔名）"""
+    return os.path.splitext(os.path.basename(file_path))[0]
+
+def find_matching_songs(music_files: list[str], search_term: str) -> list[str]:
+    """搜尋符合條件的歌曲，支援空白處理"""
+    if not search_term:
+        return []
+
+    search_term = search_term.lower()
+    search_words = search_term.split()
+    
+    matching_songs = []
+    for file in music_files:
+        song_name = get_song_name(file).lower()
+        # 檢查所有搜尋詞是否都在歌名中
+        if all(word in song_name for word in search_words):
+            matching_songs.append(file)
+            
+    return matching_songs
 
 @bot.event
 async def on_ready():
@@ -56,7 +77,7 @@ async def leave(ctx):
         await ctx.send("我目前不在語音頻道中！")
 
 @bot.command()
-async def play(ctx, *song_name):
+async def play(ctx, *, song_name: str):
     """點歌"""
     if not ctx.voice_client:
         await ctx.send("請先讓我加入一個語音頻道，使用 !join 指令。")
@@ -68,10 +89,10 @@ async def play(ctx, *song_name):
         await ctx.send("音樂資料夾中沒有音樂檔案！")
         return
     
-    selected_song = []
+    selected_song = find_matching_songs(music_files= music_files, search_term= song_name)
     guild_id = ctx.guild.id
     for i in music_files:
-        name = i.split("\\")[-1] #只取最後歌名
+        name = get_song_name(i)
         if " ".join(song_name) in name: 
             selected_song.append(i)
 
@@ -83,7 +104,7 @@ async def play(ctx, *song_name):
         music_file = random.choice(music_files)
         music_path = os.path.join(MUSIC_FOLDER, music_file)
 
-    music_name = music_file.split("\\")[-1]
+    music_name = get_song_name(music_file)
 
     play_song_info[guild_id] = {"name" : music_name , "is_looping" : False}
     # 播放音樂
@@ -95,10 +116,12 @@ async def play(ctx, *song_name):
         options=FFMPEG_OPTIONS
     ))
 
-    if PATH_VISIBLE:
-        await ctx.send(f"正在播放: {music_file}")
-    else:
-        await ctx.send(f"正在播放: {music_name}")
+    embed = discord.Embed(
+        title="🎵 現正播放",
+        description=f"**{music_file if PATH_VISIBLE else music_name}**",
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
 
 @bot.command()
 async def stop(ctx):
@@ -113,7 +136,7 @@ async def stop(ctx):
         await ctx.send("未連接到語音頻道 使用 !join 加入")
     
 @bot.command()
-async def loop(ctx, *song_name):
+async def loop(ctx, *, song_name: str = ""):
     """循環播放資料夾中的音樂"""
     if not ctx.voice_client:
         await ctx.send("請先讓我加入一個語音頻道，使用 !join 指令。")
@@ -124,67 +147,90 @@ async def loop(ctx, *song_name):
     if not music_files:
         await ctx.send("音樂資料夾中沒有音樂檔案！")
         return
-    
-    selected_song = []
-    guild_id = ctx.guild.id
-    for i in music_files:
-        name = i.split("\\")[-1] #只取最後歌名
-        if " ".join(song_name) in name: 
-            selected_song.append(i)
 
     guild_id = ctx.guild.id
+    selected_songs = find_matching_songs(music_files, song_name)
+    main_loop = asyncio.get_event_loop()
 
     async def play_next_song(e=None):
         """播放下一首音樂"""
-        if music_files and play_song_info[guild_id]["is_looping"]:
-            music_file = random.choice(music_files)
-            music_path = os.path.join(MUSIC_FOLDER, music_file)
-            music_name = music_file.split("\\")[-1]
-            play_song_info[guild_id]["name"] = music_name
-            if PATH_VISIBLE:
-                await ctx.send(f"正在播放: {music_file}")
-            else:
-                await ctx.send(f"正在播放: {music_name}")
-            vc.play(discord.FFmpegOpusAudio(
+        if not play_song_info[guild_id]["is_looping"]:
+            return
+            
+        # 根據是否有選定歌曲來決定播放列表
+        songs_to_choose = selected_songs if selected_songs else music_files
+        next_song = random.choice(songs_to_choose)
+        music_path = os.path.join(MUSIC_FOLDER, next_song)
+        music_name = get_song_name(next_song)
+        play_song_info[guild_id]["name"] = music_name
+
+        if ctx.voice_client:
+            source = discord.FFmpegOpusAudio(
                 executable=FFMPEG_EXECUTABLE,
                 source=music_path,
                 options=FFMPEG_OPTIONS
-            ),  after=lambda e: asyncio.run_coroutine_threadsafe(
-                play_next_song(), main_loop).result()
+            )
+            
+            ctx.voice_client.play(
+                source,
+                after=lambda e: asyncio.run_coroutine_threadsafe(
+                    play_next_song(), main_loop
+                ).result()
             )
 
+            embed = discord.Embed(
+                title="🎵 現正播放",
+                description=f"**{next_song if PATH_VISIBLE else music_name}**",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+
     vc = ctx.voice_client
+    
+    # 如果沒有指定歌名且正在循環播放，則停止循環
+    if not song_name and guild_id in play_song_info and play_song_info[guild_id]["is_looping"]:
+        play_song_info[guild_id]["is_looping"] = False
+        vc.stop()
+        await ctx.send("⏹️ 已停止循環播放")
+        return
+
+    # 如果正在播放，停止當前播放
     if vc.is_playing():
-        if play_song_info[guild_id]["is_looping"]:
-            vc.stop()
-            return
-        else:
-            vc.stop()
-    main_loop = asyncio.get_event_loop()
-    if selected_song:
-        # 隨機選擇一首音樂
-        music_file = random.choice(selected_song)
-        music_path = os.path.join(MUSIC_FOLDER, music_file)
-        music_name = music_file.split("\\")[-1]
-        play_song_info[guild_id] = {"name" : music_name , "is_looping" : True}
-        vc.play(discord.FFmpegOpusAudio(
-            executable=FFMPEG_EXECUTABLE,  # 確保這裡的路徑正確
+        vc.stop()
+
+    # 開始新的循環播放
+    if selected_songs:
+        # 有指定歌曲
+        first_song = random.choice(selected_songs)
+        music_path = os.path.join(MUSIC_FOLDER, first_song)
+        music_name = get_song_name(first_song)
+        play_song_info[guild_id] = {"name": music_name, "is_looping": True}
+        
+        source = discord.FFmpegOpusAudio(
+            executable=FFMPEG_EXECUTABLE,
             source=music_path,
             options=FFMPEG_OPTIONS
-        ),  after=lambda e: asyncio.run_coroutine_threadsafe(
-            play_next_song(), main_loop).result()
         )
-        if PATH_VISIBLE:
-            await ctx.send(f"正在播放: {music_file}")
-        else:
-            await ctx.send(f"正在播放: {music_name}")
-        await ctx.send("之後開始循環播放音樂！")
+        
+        vc.play(
+            source,
+            after=lambda e: asyncio.run_coroutine_threadsafe(
+                play_next_song(), main_loop
+            ).result()
+        )
 
-
+        embed = discord.Embed(
+            title="🎵 現正播放",
+            description=f"**{first_song if PATH_VISIBLE else music_name}**",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
+        await ctx.send("🔄 開始循環播放指定歌曲！")
     else:
-        play_song_info[guild_id] = {"name" : None, "is_looping" : True}
-        await ctx.send("沒有指定歌曲 開始循環播放音樂！")
-        await play_next_song()  # 開始播放
+        # 沒有指定歌曲，循環播放所有音樂
+        play_song_info[guild_id] = {"name": None, "is_looping": True}
+        await ctx.send("🔄 開始循環播放所有音樂！")
+        await play_next_song()
 
 @bot.command()
 async def list(ctx, *song_name):
@@ -269,6 +315,11 @@ async def list(ctx, *song_name):
 @bot.command()
 async def now(ctx):
     guild_id = ctx.guild.id
-    await ctx.send(play_song_info[guild_id]["name"])
+    embed = discord.Embed(
+        title="🎵 現正播放",
+        description=play_song_info[guild_id]["name"],
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
 
 bot.run(BOT_TOKEN)
