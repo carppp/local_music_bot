@@ -4,11 +4,18 @@ import os
 import random
 import configparser
 import asyncio
+from mutagen import File
+from mutagen.easyid3 import EasyID3
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3
+import base64
+import io
+from mutagen.mp4 import MP4, MP4Cover
+from mutagen.easymp4 import EasyMP4
 
 # 讀取配置文件
 config = configparser.ConfigParser()
 config.read("config.ini" , encoding="utf-8")
-# config.read("my_config.ini" , encoding="utf-8") //for develop
 
 # 從配置文件中讀取設置
 BOT_TOKEN = config["settings"]["bot_token"]
@@ -25,13 +32,15 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 #目前播放的歌曲資訊
 play_song_info = {}
 
+# 在檔案開頭定義支援的格式
+SUPPORTED_EXTENSIONS = ('.mp3', '.wav', '.flac', '.m4a', '.aac')
+
 def find_all_music_files(folder) -> list[str]:
     """遍歷資料夾及子資料夾，獲取所有音樂檔案"""
-    supported_extensions = ('.mp3', '.wav', '.flac', 'm4a', 'aac')  # 可擴展支持的音樂格式
     music_files = []
     for root, _, files in os.walk(folder):
         for file in files:
-            if file.endswith(supported_extensions):
+            if file.lower().endswith(SUPPORTED_EXTENSIONS):
                 music_files.append(os.path.join(root, file))
     return music_files
 
@@ -56,6 +65,163 @@ def find_matching_songs(music_files: list[str], search_term: str) -> list[str]:
             
     return matching_songs
 
+def get_song_metadata(file_path: str) -> dict:
+    """獲取音樂檔案的元數據，支援更多格式"""
+    metadata = {"title": None, "artist": None, "album": None, "image": None}
+    
+    try:
+        # 處理 M4A 檔案
+        if file_path.lower().endswith('.m4a'):
+            try:
+                # 先嘗試使用 EasyMP4
+                audio = EasyMP4(file_path)
+                metadata["title"] = audio.get('title', [None])[0]
+                metadata["artist"] = audio.get('artist', [None])[0]
+                metadata["album"] = audio.get('album', [None])[0]
+
+                # 讀取封面
+                audio = MP4(file_path)
+                if 'covr' in audio:
+                    metadata["image"] = audio['covr'][0]
+            except Exception as e:
+                print(f"M4A 讀取失敗: {e}")
+
+        # 處理 MP3 檔案
+        elif file_path.lower().endswith('.mp3'):
+            try:
+                # 嘗試使用 ID3 讀取完整標籤
+                audio = ID3(file_path)
+                
+                # 獲取標題
+                if 'TIT2' in audio:
+                    metadata["title"] = str(audio['TIT2'])
+                
+                # 獲取作者
+                if 'TPE1' in audio:
+                    metadata["artist"] = str(audio['TPE1'])
+                elif 'TPE2' in audio:
+                    metadata["artist"] = str(audio['TPE2'])
+                
+                # 獲取專輯
+                if 'TALB' in audio:
+                    metadata["album"] = str(audio['TALB'])
+                
+                # 獲取封面
+                if 'APIC:' in audio:
+                    metadata["image"] = audio['APIC:'].data
+                elif 'APIC:Cover' in audio:
+                    metadata["image"] = audio['APIC:Cover'].data
+                else:
+                    # 嘗試獲取其他 APIC 標籤
+                    for key in audio.keys():
+                        if key.startswith('APIC:'):
+                            metadata["image"] = audio[key].data
+                            break
+            
+            except Exception as e:
+                print(f"ID3 讀取失敗，嘗試 EasyID3: {e}")
+                try:
+                    audio = EasyID3(file_path)
+                    metadata["title"] = audio.get('title', [None])[0]
+                    metadata["artist"] = audio.get('artist', [None])[0]
+                    metadata["album"] = audio.get('album', [None])[0]
+                except Exception as e:
+                    print(f"EasyID3 讀取失敗: {e}")
+
+        # 處理其他格式 (FLAC, WAV, AAC 等)
+        else:
+            audio = File(file_path)
+            
+            if hasattr(audio, 'tags'):
+                tags = audio.tags
+                
+                # 嘗試不同的標籤格式
+                for key in ['title', 'TITLE', 'TIT2']:
+                    if key in tags:
+                        metadata["title"] = str(tags[key][0])
+                        break
+                        
+                for key in ['artist', 'ARTIST', 'TPE1']:
+                    if key in tags:
+                        metadata["artist"] = str(tags[key][0])
+                        break
+                        
+                for key in ['album', 'ALBUM', 'TALB']:
+                    if key in tags:
+                        metadata["album"] = str(tags[key][0])
+                        break
+
+            # 嘗試獲取封面圖片
+            if not metadata["image"]:
+                if hasattr(audio, 'pictures'):
+                    for pic in audio.pictures:
+                        if pic.type == 3:  # 封面圖片
+                            metadata["image"] = pic.data
+                            break
+                elif hasattr(audio, 'tags'):
+                    # 檢查是否有其他格式的圖片標籤
+                    for key in ['APIC:', 'APIC:Cover', 'covr', 'COVER_ART']:
+                        if key in audio.tags:
+                            metadata["image"] = audio.tags[key].data
+                            break
+
+    except Exception as e:
+        print(f"讀取音樂檔案元數據時發生錯誤: {e}")
+
+    # 清理元數據中的特殊字符和多餘空格
+    for key in ['title', 'artist', 'album']:
+        if metadata[key]:
+            metadata[key] = metadata[key].strip()
+            # 移除可能的引號
+            if metadata[key].startswith('"') and metadata[key].endswith('"'):
+                metadata[key] = metadata[key][1:-1]
+            if metadata[key].startswith("'") and metadata[key].endswith("'"):
+                metadata[key] = metadata[key][1:-1]
+
+    return metadata
+
+async def send_song_info(ctx, song_path: str, title_prefix: str = "🎵 現正播放"):
+    """發送歌曲資訊的通用函數"""
+    try:
+        metadata = get_song_metadata(song_path)
+        
+        embed = discord.Embed(
+            title=title_prefix,
+            color=discord.Color.green()
+        )
+
+        # 添加基本資訊
+        file_name = get_song_name(song_path)
+        embed.add_field(
+            name="檔案名稱", 
+            value=file_name,
+            inline=False
+        )
+
+        # 添加元數據資訊（如果有的話）
+        if metadata["title"]:
+            embed.add_field(name="標題", value=metadata["title"], inline=True)
+        if metadata["artist"]:
+            embed.add_field(name="作者", value=metadata["artist"], inline=True)
+        if metadata["album"]:
+            embed.add_field(name="專輯", value=metadata["album"], inline=True)
+
+        # 如果有專輯封面，添加為縮圖
+        if metadata["image"]:
+            try:
+                image = io.BytesIO(metadata["image"])
+                file = discord.File(image, filename="album_cover.png")
+                embed.set_thumbnail(url="attachment://album_cover.png")
+                await ctx.send(file=file, embed=embed)
+            except Exception as e:
+                print(f"處理封面圖片時發生錯誤: {e}")
+                await ctx.send(embed=embed)
+        else:
+            await ctx.send(embed=embed)
+    except Exception as e:
+        print(f"發送歌曲資訊時發生錯誤: {e}")
+        await ctx.send(f"**{title_prefix}**: {get_song_name(song_path)}")
+
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
@@ -78,51 +244,52 @@ async def leave(ctx):
         await ctx.send("我目前不在語音頻道中！")
 
 @bot.command()
-async def play(ctx, *, song_name: str):
-    """點歌"""
-    if not ctx.voice_client:
-        await ctx.send("請先讓我加入一個語音頻道，使用 !join 指令。")
-        return
-    
-    # 獲取音樂檔案列表
-    music_files = find_all_music_files(MUSIC_FOLDER)
-    if not music_files:
-        await ctx.send("音樂資料夾中沒有音樂檔案！")
-        return
-    
-    selected_song = find_matching_songs(music_files= music_files, search_term= song_name)
-    guild_id = ctx.guild.id
-    for i in music_files:
-        name = get_song_name(i)
-        if " ".join(song_name) in name: 
-            selected_song.append(i)
+async def play(ctx, *, song_name: str = ""):
+    """播放指定歌曲或隨機播放"""
+    try:
+        if not ctx.voice_client:
+            await ctx.send("❌ 請先使用 !join 讓我加入語音頻道")
+            return
 
-    if selected_song:
-        # 隨機選擇一首音樂
-        music_file = random.choice(selected_song)
-        music_path = os.path.join(MUSIC_FOLDER, music_file)
-    else:
-        music_file = random.choice(music_files)
-        music_path = os.path.join(MUSIC_FOLDER, music_file)
+        music_files = find_all_music_files(MUSIC_FOLDER)
+        if not music_files:
+            await ctx.send("❌ 音樂資料夾中沒有音樂檔案！")
+            return
 
-    music_name = get_song_name(music_file)
+        selected_songs = find_matching_songs(music_files, song_name)
+        
+        if not selected_songs and song_name:
+            await ctx.send(f"❌ 找不到包含 '{song_name}' 的歌曲")
+            return
 
-    play_song_info[guild_id] = {"name" : music_name , "is_looping" : False}
-    # 播放音樂
-    vc = ctx.voice_client
-    vc.stop()  # 停止當前播放的音樂
-    vc.play(discord.FFmpegOpusAudio(
-        executable=FFMPEG_EXECUTABLE,  # 確保這裡的路徑正確
-        source=music_path,
-        options=FFMPEG_OPTIONS
-    ))
+        # 選擇要播放的歌曲
+        music_file = random.choice(selected_songs if selected_songs else music_files)
+        
+        # 播放音樂
+        source = discord.FFmpegOpusAudio(
+            executable=FFMPEG_EXECUTABLE,
+            source=music_file,
+            options=FFMPEG_OPTIONS
+        )
+        
+        if ctx.voice_client.is_playing():
+            ctx.voice_client.stop()
+        
+        ctx.voice_client.play(source)
+        
+        # 更新播放資訊
+        guild_id = ctx.guild.id
+        play_song_info[guild_id] = {
+            "name": get_song_name(music_file),
+            "is_looping": False
+        }
 
-    embed = discord.Embed(
-        title="🎵 現正播放",
-        description=f"**{music_file if PATH_VISIBLE else music_name}**",
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=embed)
+        # 顯示歌曲資訊
+        await send_song_info(ctx, music_file)
+
+    except Exception as e:
+        print(f"播放時發生錯誤: {e}")
+        await ctx.send(f"❌ 播放時發生錯誤: {str(e)}")
 
 @bot.command()
 async def stop(ctx):
@@ -138,100 +305,63 @@ async def stop(ctx):
     
 @bot.command()
 async def loop(ctx, *, song_name: str = ""):
-    """循環播放資料夾中的音樂"""
-    if not ctx.voice_client:
-        await ctx.send("請先讓我加入一個語音頻道，使用 !join 指令。")
-        return
-
-    # 獲取音樂檔案列表
-    music_files = find_all_music_files(MUSIC_FOLDER)
-    if not music_files:
-        await ctx.send("音樂資料夾中沒有音樂檔案！")
-        return
-
-    guild_id = ctx.guild.id
-    selected_songs = find_matching_songs(music_files, song_name)
-    main_loop = asyncio.get_event_loop()
-
-    async def play_next_song(e=None):
-        """播放下一首音樂"""
-        if not play_song_info[guild_id]["is_looping"]:
+    """循環播放音樂"""
+    try:
+        if not ctx.voice_client:
+            await ctx.send("❌ 請先使用 !join 讓我加入語音頻道")
             return
-            
-        # 根據是否有選定歌曲來決定播放列表
-        songs_to_choose = selected_songs if selected_songs else music_files
-        next_song = random.choice(songs_to_choose)
-        music_path = os.path.join(MUSIC_FOLDER, next_song)
-        music_name = get_song_name(next_song)
-        play_song_info[guild_id]["name"] = music_name
 
-        if ctx.voice_client:
+        guild_id = ctx.guild.id
+        music_files = find_all_music_files(MUSIC_FOLDER)
+        selected_songs = find_matching_songs(music_files, song_name)
+        main_loop = asyncio.get_event_loop()
+
+        async def play_next_song(e=None):
+            """播放下一首音樂"""
+            if not play_song_info[guild_id]["is_looping"]:
+                return
+                
+            next_song = random.choice(selected_songs if selected_songs else music_files)
             source = discord.FFmpegOpusAudio(
                 executable=FFMPEG_EXECUTABLE,
-                source=music_path,
+                source=next_song,
                 options=FFMPEG_OPTIONS
             )
             
-            ctx.voice_client.play(
-                source,
-                after=lambda e: asyncio.run_coroutine_threadsafe(
-                    play_next_song(), main_loop
-                ).result()
-            )
+            if ctx.voice_client:
+                ctx.voice_client.play(
+                    source,
+                    after=lambda e: asyncio.run_coroutine_threadsafe(
+                        play_next_song(), main_loop
+                    ).result()
+                )
+                
+                # 更新播放資訊
+                play_song_info[guild_id]["name"] = get_song_name(next_song)
+                
+                # 顯示歌曲資訊
+                await send_song_info(ctx, next_song)
 
-            embed = discord.Embed(
-                title="🎵 現正播放",
-                description=f"**{next_song if PATH_VISIBLE else music_name}**",
-                color=discord.Color.green()
-            )
-            await ctx.send(embed=embed)
+        # 處理循環播放邏輯
+        if not song_name and guild_id in play_song_info and play_song_info[guild_id]["is_looping"]:
+            play_song_info[guild_id]["is_looping"] = False
+            ctx.voice_client.stop()
+            await ctx.send("⏹️ 已停止循環播放")
+            return
 
-    vc = ctx.voice_client
-    
-    # 如果沒有指定歌名且正在循環播放，則停止循環
-    if not song_name and guild_id in play_song_info and play_song_info[guild_id]["is_looping"]:
-        play_song_info[guild_id]["is_looping"] = False
-        vc.stop()
-        await ctx.send("⏹️ 已停止循環播放")
-        return
+        # 開始新的循環播放
+        if selected_songs or not song_name:
+            play_song_info[guild_id] = {"name": None, "is_looping": True}
+            if ctx.voice_client.is_playing():
+                ctx.voice_client.stop()
+            await play_next_song()
+            await ctx.send("🔄 開始循環播放！")
+        else:
+            await ctx.send(f"❌ 找不到包含 '{song_name}' 的歌曲")
 
-    # 如果正在播放，停止當前播放
-    if vc.is_playing():
-        vc.stop()
-
-    # 開始新的循環播放
-    if selected_songs:
-        # 有指定歌曲
-        first_song = random.choice(selected_songs)
-        music_path = os.path.join(MUSIC_FOLDER, first_song)
-        music_name = get_song_name(first_song)
-        play_song_info[guild_id] = {"name": music_name, "is_looping": True}
-        
-        source = discord.FFmpegOpusAudio(
-            executable=FFMPEG_EXECUTABLE,
-            source=music_path,
-            options=FFMPEG_OPTIONS
-        )
-        
-        vc.play(
-            source,
-            after=lambda e: asyncio.run_coroutine_threadsafe(
-                play_next_song(), main_loop
-            ).result()
-        )
-
-        embed = discord.Embed(
-            title="🎵 現正播放",
-            description=f"**{first_song if PATH_VISIBLE else music_name}**",
-            color=discord.Color.green()
-        )
-        await ctx.send(embed=embed)
-        await ctx.send("🔄 開始循環播放指定歌曲！")
-    else:
-        # 沒有指定歌曲，循環播放所有音樂
-        play_song_info[guild_id] = {"name": None, "is_looping": True}
-        await ctx.send("🔄 開始循環播放所有音樂！")
-        await play_next_song()
+    except Exception as e:
+        print(f"循環播放時發生錯誤: {e}")
+        await ctx.send(f"❌ 循環播放時發生錯誤: {str(e)}")
 
 @bot.command()
 async def list(ctx, *song_name):
@@ -315,12 +445,25 @@ async def list(ctx, *song_name):
 
 @bot.command()
 async def now(ctx):
+    """顯示當前播放的歌曲資訊"""
     guild_id = ctx.guild.id
-    embed = discord.Embed(
-        title="🎵 現正播放",
-        description=play_song_info[guild_id]["name"],
-        color=discord.Color.green()
-    )
-    await ctx.send(embed=embed)
+    if guild_id not in play_song_info or not play_song_info[guild_id]["name"]:
+        await ctx.send("❌ 目前沒有播放任何音樂")
+        return
+
+    # 獲取完整的檔案路徑
+    current_song = None
+    music_files = find_all_music_files(MUSIC_FOLDER)
+    for file in music_files:
+        if get_song_name(file) == play_song_info[guild_id]["name"]:
+            current_song = file
+            break
+
+    if not current_song:
+        await ctx.send("❌ 找不到當前播放的音樂檔案")
+        return
+
+    # 顯示歌曲資訊
+    await send_song_info(ctx, current_song)
 
 bot.run(BOT_TOKEN)
