@@ -22,7 +22,8 @@ Setup
 
     5.過完認證後會獲得一串英數字 複製下來貼在config.ini中的bot_token欄位中
 
-    6.點左邊OAuth2 在下面URL Generator那邊點bot 下面會出現要給的權限 目前功能的話只需要connect跟speak就好
+    6.點左邊OAuth2 在下面URL Generator那邊點bot 下面會出現要給的權限 要不要勾都可以 反正可以在加進去之後用身分組權限控制
+    如果要先給好權限的話要選Send Messages, Add Reactions, Connect, Speak這四個
 
     7.把最下面的Generated URL 複製下來就可以拉進伺服器了
 
@@ -41,7 +42,7 @@ Command
     !play [關鍵字] 歌名找含那些字的隨便挑一首播
     如果沒打關鍵字就會從資料夾全部的歌裡隨便挑一首播
 
-    !loop 隨便挑一首歌播然後開始循環播放(上面的指令只會播一首)
+    !loop [關鍵字]開始循環播放(上面的指令只會播一首)(同樣支援點歌)
 
     !stop 停止播放 如果在循環中也會把循環停掉
 
