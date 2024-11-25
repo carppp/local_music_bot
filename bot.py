@@ -321,7 +321,7 @@ async def loop(ctx, *, song_name: str = ""):
             if not play_song_info[guild_id]["is_looping"]:
                 return
                 
-            next_song = random.choice(selected_songs if selected_songs else music_files)
+            next_song = random.choice(music_files)
             source = discord.FFmpegOpusAudio(
                 executable=FFMPEG_EXECUTABLE,
                 source=next_song,
@@ -350,14 +350,32 @@ async def loop(ctx, *, song_name: str = ""):
             return
 
         # 開始新的循環播放
-        if selected_songs or not song_name:
+        if selected_songs:
+            next_song = random.choice(selected_songs)
+            source = discord.FFmpegOpusAudio(
+                executable=FFMPEG_EXECUTABLE,
+                source=next_song,
+                options=FFMPEG_OPTIONS
+            )
+            if ctx.voice_client:
+                ctx.voice_client.play(
+                    source,
+                    after=lambda e: asyncio.run_coroutine_threadsafe(
+                        play_next_song(), main_loop
+                    ).result()
+                )
+                play_song_info[guild_id] = {"name": get_song_name(next_song), "is_looping": True}
+                
+                # 顯示歌曲資訊
+                await send_song_info(ctx, next_song)
+            
+            await ctx.send(f"接著開始循環播放！")
+        else:
             play_song_info[guild_id] = {"name": None, "is_looping": True}
             if ctx.voice_client.is_playing():
                 ctx.voice_client.stop()
             await play_next_song()
             await ctx.send("🔄 開始循環播放！")
-        else:
-            await ctx.send(f"❌ 找不到包含 '{song_name}' 的歌曲")
 
     except Exception as e:
         print(f"循環播放時發生錯誤: {e}")
